@@ -1,6 +1,8 @@
 #include "LockGuard.h"
+#include "configuration.h"
 
-namespace concurrency {
+namespace concurrency
+{
 
 LockGuard::LockGuard(Lock *lock) : lock(lock)
 {

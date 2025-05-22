@@ -1,52 +1,78 @@
 #include "StreamAPI.h"
+#include "PowerFSM.h"
+#include "RTC.h"
+#include "Throttle.h"
 #include "configuration.h"
 
 #define START1 0x94
 #define START2 0xc3
 #define HEADER_LEN 4
 
-void StreamAPI::loop()
+int32_t StreamAPI::runOncePart()
 {
+    auto result = readStream();
     writeStream();
-    readStream();
     checkConnectionTimeout();
+    return result;
 }
 
 /**
  * Read any rx chars from the link and call handleToRadio
  */
-void StreamAPI::readStream()
+int32_t StreamAPI::readStream()
 {
-    while (stream->available()) { // Currently we never want to block
-        uint8_t c = stream->read();
+    if (!stream->available()) {
+        // Nothing available this time, if the computer has talked to us recently, poll often, otherwise let CPU sleep a long time
+        bool recentRx = Throttle::isWithinTimespanMs(lastRxMsec, 2000);
+        return recentRx ? 5 : 250;
+    } else {
+        while (stream->available()) { // Currently we never want to block
+            int cInt = stream->read();
+            if (cInt < 0)
+                break; // We ran out of characters (even though available said otherwise) - this can happen on rf52 adafruit
+                       // arduino
 
-        // Use the read pointer for a little state machine, first look for framing, then length bytes, then payload
-        size_t ptr = rxPtr++; // assume we will probably advance the rxPtr
+            uint8_t c = (uint8_t)cInt;
 
-        rxBuf[ptr] = c; // store all bytes (including framing)
+            // Use the read pointer for a little state machine, first look for framing, then length bytes, then payload
+            size_t ptr = rxPtr;
 
-        if (ptr == 0) { // looking for START1
-            if (c != START1)
-                rxPtr = 0;     // failed to find framing
-        } else if (ptr == 1) { // looking for START2
-            if (c != START2)
-                rxPtr = 0;                             // failed to find framing
-        } else if (ptr >= HEADER_LEN) {                // we have at least read our 4 byte framing
-            uint32_t len = (rxBuf[2] << 8) + rxBuf[3]; // big endian 16 bit length follows framing
+            rxPtr++;        // assume we will probably advance the rxPtr
+            rxBuf[ptr] = c; // store all bytes (including framing)
 
-            if (ptr == HEADER_LEN) {
-                // we _just_ finished our 4 byte header, validate length now (note: a length of zero is a valid
-                // protobuf also)
-                if (len > MAX_TO_FROM_RADIO_SIZE)
-                    rxPtr = 0; // length is bogus, restart search for framing
-            }
+            // console->printf("rxPtr %d ptr=%d c=0x%x\n", rxPtr, ptr, c);
 
-            if (rxPtr != 0 && ptr + 1 == len + HEADER_LEN) {
-                // If we didn't just fail the packet and we now have the right # of bytes, parse it
-                handleToRadio(rxBuf + HEADER_LEN, len);
-                rxPtr = 0; // start over again
+            if (ptr == 0) { // looking for START1
+                if (c != START1)
+                    rxPtr = 0;     // failed to find framing
+            } else if (ptr == 1) { // looking for START2
+                if (c != START2)
+                    rxPtr = 0;                             // failed to find framing
+            } else if (ptr >= HEADER_LEN - 1) {            // we have at least read our 4 byte framing
+                uint32_t len = (rxBuf[2] << 8) + rxBuf[3]; // big endian 16 bit length follows framing
+
+                // console->printf("len %d\n", len);
+
+                if (ptr == HEADER_LEN - 1) {
+                    // we _just_ finished our 4 byte header, validate length now (note: a length of zero is a valid
+                    // protobuf also)
+                    if (len > MAX_TO_FROM_RADIO_SIZE)
+                        rxPtr = 0; // length is bogus, restart search for framing
+                }
+
+                if (rxPtr != 0)                        // Is packet still considered 'good'?
+                    if (ptr + 1 >= len + HEADER_LEN) { // have we received all of the payload?
+                        rxPtr = 0;                     // start over again on the next packet
+
+                        // If we didn't just fail the packet and we now have the right # of bytes, parse it
+                        handleToRadio(rxBuf + HEADER_LEN, len);
+                    }
             }
         }
+
+        // we had bytes available this time, so assume we might have them next time also
+        lastRxMsec = millis();
+        return 0;
     }
 }
 
@@ -76,7 +102,9 @@ void StreamAPI::emitTxBuffer(size_t len)
         txBuf[2] = (len >> 8) & 0xff;
         txBuf[3] = len & 0xff;
 
-        stream->write(txBuf, len + HEADER_LEN);
+        auto totalLen = len + HEADER_LEN;
+        stream->write(txBuf, totalLen);
+        stream->flush();
     }
 }
 
@@ -84,9 +112,42 @@ void StreamAPI::emitRebooted()
 {
     // In case we send a FromRadio packet
     memset(&fromRadioScratch, 0, sizeof(fromRadioScratch));
-    fromRadioScratch.which_variant = FromRadio_rebooted_tag;
-    fromRadioScratch.variant.rebooted = true;
+    fromRadioScratch.which_payload_variant = meshtastic_FromRadio_rebooted_tag;
+    fromRadioScratch.rebooted = true;
 
-    DEBUG_MSG("Emitting reboot packet for serial shell\n");
-    emitTxBuffer(pb_encode_to_bytes(txBuf + HEADER_LEN, FromRadio_size, FromRadio_fields, &fromRadioScratch));
+    // LOG_DEBUG("Emitting reboot packet for serial shell");
+    emitTxBuffer(pb_encode_to_bytes(txBuf + HEADER_LEN, meshtastic_FromRadio_size, &meshtastic_FromRadio_msg, &fromRadioScratch));
+}
+
+void StreamAPI::emitLogRecord(meshtastic_LogRecord_Level level, const char *src, const char *format, va_list arg)
+{
+    // In case we send a FromRadio packet
+    memset(&fromRadioScratch, 0, sizeof(fromRadioScratch));
+    fromRadioScratch.which_payload_variant = meshtastic_FromRadio_log_record_tag;
+    fromRadioScratch.log_record.level = level;
+
+    uint32_t rtc_sec = getValidTime(RTCQuality::RTCQualityDevice, true);
+    fromRadioScratch.log_record.time = rtc_sec;
+    strncpy(fromRadioScratch.log_record.source, src, sizeof(fromRadioScratch.log_record.source) - 1);
+
+    auto num_printed =
+        vsnprintf(fromRadioScratch.log_record.message, sizeof(fromRadioScratch.log_record.message) - 1, format, arg);
+    if (num_printed > 0 && fromRadioScratch.log_record.message[num_printed - 1] ==
+                               '\n') // Strip any ending newline, because we have records for framing instead.
+        fromRadioScratch.log_record.message[num_printed - 1] = '\0';
+    emitTxBuffer(pb_encode_to_bytes(txBuf + HEADER_LEN, meshtastic_FromRadio_size, &meshtastic_FromRadio_msg, &fromRadioScratch));
+}
+
+/// Hookable to find out when connection changes
+void StreamAPI::onConnectionChanged(bool connected)
+{
+    // FIXME do reference counting instead
+
+    if (connected) { // To prevent user confusion, turn off bluetooth while using the serial port api
+        powerFSM.trigger(EVENT_SERIAL_CONNECTED);
+    } else {
+        // FIXME, we get no notice of serial going away, we should instead automatically generate this event if we haven't
+        // received a packet in a while
+        powerFSM.trigger(EVENT_SERIAL_DISCONNECTED);
+    }
 }

@@ -2,6 +2,8 @@
 
 #include <Arduino.h>
 #include <assert.h>
+#include <functional>
+#include <memory>
 
 #include "PointerQueue.h"
 
@@ -9,6 +11,7 @@ template <class T> class Allocator
 {
 
   public:
+    Allocator() : deleter([this](T *p) { this->release(p); }) {}
     virtual ~Allocator() {}
 
     /// Return a queable object which has been prefilled with zeros.  Panic if no buffer is available
@@ -43,12 +46,32 @@ template <class T> class Allocator
         return p;
     }
 
+    /// Variations of the above methods that return std::unique_ptr instead of raw pointers.
+    using UniqueAllocation = std::unique_ptr<T, const std::function<void(T *)> &>;
+    /// Return a queable object which has been prefilled with zeros.
+    /// std::unique_ptr wrapped variant of allocZeroed().
+    UniqueAllocation allocUniqueZeroed() { return UniqueAllocation(allocZeroed(), deleter); }
+    /// Return a queable object which has been prefilled with zeros - allow timeout to wait for available buffers (you probably
+    /// don't want this version).
+    /// std::unique_ptr wrapped variant of allocZeroed(TickType_t maxWait).
+    UniqueAllocation allocUniqueZeroed(TickType_t maxWait) { return UniqueAllocation(allocZeroed(maxWait), deleter); }
+    /// Return a queable object which is a copy of some other object
+    /// std::unique_ptr wrapped variant of allocCopy(const T &src, TickType_t maxWait).
+    UniqueAllocation allocUniqueCopy(const T &src, TickType_t maxWait = portMAX_DELAY)
+    {
+        return UniqueAllocation(allocCopy(src, maxWait), deleter);
+    }
+
     /// Return a buffer for use by others
     virtual void release(T *p) = 0;
 
   protected:
     // Alloc some storage
     virtual T *alloc(TickType_t maxWait) = 0;
+
+  private:
+    // std::unique_ptr Deleter function; calls release().
+    const std::function<void(T *)> deleter;
 };
 
 /**
@@ -58,7 +81,7 @@ template <class T> class MemoryDynamic : public Allocator<T>
 {
   public:
     /// Return a buffer for use by others
-    virtual void release(T *p)
+    virtual void release(T *p) override
     {
         assert(p);
         free(p);
@@ -66,60 +89,10 @@ template <class T> class MemoryDynamic : public Allocator<T>
 
   protected:
     // Alloc some storage
-    virtual T *alloc(TickType_t maxWait)
+    virtual T *alloc(TickType_t maxWait) override
     {
         T *p = (T *)malloc(sizeof(T));
         assert(p);
         return p;
     }
-};
-
-/**
- * A pool based allocator
- *
- */
-template <class T> class MemoryPool : public Allocator<T>
-{
-    PointerQueue<T> dead;
-
-    T *buf; // our large raw block of memory
-
-    size_t maxElements;
-
-  public:
-    MemoryPool(size_t _maxElements) : dead(_maxElements), maxElements(_maxElements)
-    {
-        buf = new T[maxElements];
-
-        // prefill dead
-        for (size_t i = 0; i < maxElements; i++)
-            release(&buf[i]);
-    }
-
-    ~MemoryPool() { delete[] buf; }
-
-    /// Return a buffer for use by others
-    virtual void release(T *p)
-    {
-        assert(dead.enqueue(p, 0));
-        assert(p >= buf &&
-               (size_t)(p - buf) <
-                   maxElements); // sanity check to make sure a programmer didn't free something that didn't come from this pool
-    }
-
-#ifdef HAS_FREE_RTOS
-    /// Return a buffer from an ISR, if higherPriWoken is set to true you have some work to do ;-)
-    void releaseFromISR(T *p, BaseType_t *higherPriWoken)
-    {
-        assert(dead.enqueueFromISR(p, higherPriWoken));
-        assert(p >= buf &&
-               (size_t)(p - buf) <
-                   maxElements); // sanity check to make sure a programmer didn't free something that didn't come from this pool
-    }
-#endif
-
-  protected:
-    /// Return a queable object which has been prefilled with zeros - allow timeout to wait for available buffers (you
-    /// probably don't want this version).
-    virtual T *alloc(TickType_t maxWait) { return dead.dequeuePtr(maxWait); }
 };

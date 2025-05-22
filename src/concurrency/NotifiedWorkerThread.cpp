@@ -1,6 +1,6 @@
 #include "NotifiedWorkerThread.h"
 #include "configuration.h"
-#include <assert.h>
+#include "main.h"
 
 namespace concurrency
 {
@@ -28,14 +28,17 @@ IRAM_ATTR bool NotifiedWorkerThread::notifyCommon(uint32_t v, bool overwrite)
     if (overwrite || notification == 0) {
         enabled = true;
         setInterval(0); // Run ASAP
+        runASAP = true;
 
         notification = v;
-        if (debugNotification)
-            DEBUG_MSG("setting notification %d\n", v);
+        if (debugNotification) {
+            LOG_DEBUG("Set notification %d", v);
+        }
         return true;
     } else {
-        if (debugNotification)
-            DEBUG_MSG("dropping notification %d\n", v);
+        if (debugNotification) {
+            LOG_DEBUG("Drop notification %d", v);
+        }
         return false;
     }
 }
@@ -63,21 +66,27 @@ bool NotifiedWorkerThread::notifyLater(uint32_t delay, uint32_t v, bool overwrit
 
     if (didIt) {                   // If we didn't already have something queued, override the delay to be larger
         setIntervalFromNow(delay); // a new version of setInterval relative to the current time
-        if (debugNotification)
-            DEBUG_MSG("delaying notification %u\n", delay);
+        if (debugNotification) {
+            LOG_DEBUG("Delay notification %u", delay);
+        }
     }
 
     return didIt;
 }
 
-int32_t NotifiedWorkerThread::runOnce()
+void NotifiedWorkerThread::checkNotification()
 {
     auto n = notification;
-    enabled = false;  // Only run once per notification
     notification = 0; // clear notification
     if (n) {
         onNotify(n);
     }
+}
+
+int32_t NotifiedWorkerThread::runOnce()
+{
+    enabled = false; // Only run once per notification
+    checkNotification();
 
     return RUN_SAME;
 }

@@ -14,16 +14,12 @@
  */
 template <class T> class TypedQueue
 {
-    static_assert(std::is_pod<T>::value, "T must be pod");
+    static_assert(std::is_standard_layout<T>::value, "T must be standard layout");
     QueueHandle_t h;
     concurrency::OSThread *reader = NULL;
 
   public:
-    TypedQueue(int maxElements)
-    {
-        h = xQueueCreate(maxElements, sizeof(T));
-        assert(h);
-    }
+    explicit TypedQueue(int maxElements) : h(xQueueCreate(maxElements, sizeof(T))) { assert(h); }
 
     ~TypedQueue() { vQueueDelete(h); }
 
@@ -31,7 +27,11 @@ template <class T> class TypedQueue
 
     bool isEmpty() { return uxQueueMessagesWaiting(h) == 0; }
 
-    bool enqueue(T x, TickType_t maxWait = portMAX_DELAY)
+    int numUsed() { return uxQueueMessagesWaiting(h); }
+
+    /** euqueue a packet.  Also, maxWait used to default to portMAX_DELAY, but we now want to callers to THINK about what blocking
+     * they want */
+    bool enqueue(T x, TickType_t maxWait)
     {
         if (reader) {
             reader->setInterval(0);
@@ -74,16 +74,27 @@ template <class T> class TypedQueue
 {
     std::queue<T> q;
     concurrency::OSThread *reader = NULL;
+    int maxElements;
 
   public:
-    TypedQueue(int maxElements) {}
+    explicit TypedQueue(int _maxElements) : maxElements(_maxElements) {}
 
-    int numFree() { return 1; } // Always claim 1 free, because we can grow to any size
+    int numFree()
+    {
+        if (maxElements <= 0)
+            return 1; // Always claim 1 free, because we can grow to any size
+        return maxElements - numUsed();
+    }
 
     bool isEmpty() { return q.empty(); }
 
+    int numUsed() { return q.size(); }
+
     bool enqueue(T x, TickType_t maxWait = portMAX_DELAY)
     {
+        if (numFree() <= 0)
+            return false;
+
         if (reader) {
             reader->setInterval(0);
             concurrency::mainDelay.interrupt();

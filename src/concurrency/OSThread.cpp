@@ -1,5 +1,6 @@
 #include "OSThread.h"
 #include "configuration.h"
+#include "memGet.h"
 #include <assert.h>
 
 namespace concurrency
@@ -32,8 +33,10 @@ OSThread::OSThread(const char *_name, uint32_t period, ThreadController *_contro
 
     ThreadName = _name;
 
-    if (controller)
-        controller->add(this);
+    if (controller) {
+        bool added = controller->add(this);
+        assert(added);
+    }
 }
 
 OSThread::~OSThread()
@@ -58,22 +61,35 @@ bool OSThread::shouldRun(unsigned long time)
 {
     bool r = Thread::shouldRun(time);
 
-    if (showRun && r)
-        DEBUG_MSG("Thread %s: run\n", ThreadName.c_str());
+    if (showRun && r) {
+        LOG_DEBUG("Thread %s: run", ThreadName.c_str());
+    }
 
-    if (showWaiting && enabled && !r)
-        DEBUG_MSG("Thread %s: wait %lu\n", ThreadName.c_str(), interval);
+    if (showWaiting && enabled && !r) {
+        LOG_DEBUG("Thread %s: wait %lu", ThreadName.c_str(), interval);
+    }
 
-    if (showDisabled && !enabled)
-        DEBUG_MSG("Thread %s: disabled\n", ThreadName.c_str());
+    if (showDisabled && !enabled) {
+        LOG_DEBUG("Thread %s: disabled", ThreadName.c_str());
+    }
 
     return r;
 }
 
 void OSThread::run()
 {
+#ifdef DEBUG_HEAP
+    auto heap = memGet.getFreeHeap();
+#endif
     currentThread = this;
     auto newDelay = runOnce();
+#ifdef DEBUG_HEAP
+    auto newHeap = memGet.getFreeHeap();
+    if (newHeap < heap)
+        LOG_DEBUG("------ Thread %s leaked heap %d -> %d (%d) ------", ThreadName.c_str(), heap, newHeap, newHeap - heap);
+    if (heap < newHeap)
+        LOG_DEBUG("++++++ Thread %s freed heap %d -> %d (%d) ++++++", ThreadName.c_str(), heap, newHeap, newHeap - heap);
+#endif
 
     runned();
 
@@ -81,6 +97,14 @@ void OSThread::run()
         setInterval(newDelay);
 
     currentThread = NULL;
+}
+
+int32_t OSThread::disable()
+{
+    enabled = false;
+    setInterval(INT32_MAX);
+
+    return INT32_MAX;
 }
 
 /**

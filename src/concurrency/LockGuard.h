@@ -2,7 +2,8 @@
 
 #include "Lock.h"
 
-namespace concurrency {
+namespace concurrency
+{
 
 /**
  * @brief RAII lock guard
@@ -10,7 +11,7 @@ namespace concurrency {
 class LockGuard
 {
   public:
-    LockGuard(Lock *lock);
+    explicit LockGuard(Lock *lock);
     ~LockGuard();
 
     LockGuard(const LockGuard &) = delete;

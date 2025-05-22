@@ -1,6 +1,5 @@
 #pragma once
 
-#include "PacketHistory.h"
 #include "Router.h"
 
 /**
@@ -26,9 +25,12 @@
   Any entries in recentBroadcasts that are older than X seconds (longer than the
   max time a flood can take) will be discarded.
  */
-class FloodingRouter : public Router, protected PacketHistory
+class FloodingRouter : public Router
 {
   private:
+    /* Check if we should rebroadcast this packet, and do so if needed */
+    void perhapsRebroadcast(const meshtastic_MeshPacket *p);
+
   public:
     /**
      * Constructor
@@ -41,19 +43,25 @@ class FloodingRouter : public Router, protected PacketHistory
      * later free() the packet to pool.  This routine is not allowed to stall.
      * If the txmit queue is full it might return an error
      */
-    virtual ErrorCode send(MeshPacket *p);
+    virtual ErrorCode send(meshtastic_MeshPacket *p) override;
 
   protected:
     /**
      * Should this incoming filter be dropped?
      *
-     * Called immedately on receiption, before any further processing.
+     * Called immediately on reception, before any further processing.
      * @return true to abandon the packet
      */
-    virtual bool shouldFilterReceived(const MeshPacket *p);
+    virtual bool shouldFilterReceived(const meshtastic_MeshPacket *p) override;
 
     /**
      * Look for broadcasts we need to rebroadcast
      */
-    virtual void sniffReceived(const MeshPacket *p);
+    virtual void sniffReceived(const meshtastic_MeshPacket *p, const meshtastic_Routing *c) override;
+
+    /* Call when receiving a duplicate packet to check whether we should cancel a packet in the Tx queue */
+    void perhapsCancelDupe(const meshtastic_MeshPacket *p);
+
+    // Return true if we are a rebroadcaster
+    bool isRebroadcaster();
 };

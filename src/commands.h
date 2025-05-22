@@ -4,12 +4,15 @@
  */
 
 enum class Cmd {
-        INVALID,
-        SET_ON,
-        SET_OFF,
-        ON_PRESS,
-        START_BLUETOOTH_PIN_SCREEN,
-        STOP_BLUETOOTH_PIN_SCREEN,
-        STOP_BOOT_SCREEN,
-        PRINT,
+    INVALID,
+    SET_ON,
+    SET_OFF,
+    ON_PRESS,
+    START_ALERT_FRAME,
+    STOP_ALERT_FRAME,
+    START_FIRMWARE_UPDATE_SCREEN,
+    STOP_BOOT_SCREEN,
+    PRINT,
+    SHOW_PREV_FRAME,
+    SHOW_NEXT_FRAME
 };

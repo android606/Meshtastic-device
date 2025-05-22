@@ -2,6 +2,8 @@
 
 #include "PhoneAPI.h"
 #include "Stream.h"
+#include "concurrency/OSThread.h"
+#include <cstdarg>
 
 // A To/FromRadio packet + our 32 bit header
 #define MAX_STREAM_BUF_SIZE (MAX_TO_FROM_RADIO_SIZE + sizeof(uint32_t))
@@ -34,8 +36,11 @@ class StreamAPI : public PhoneAPI
      */
     Stream *stream;
 
-    uint8_t rxBuf[MAX_STREAM_BUF_SIZE];
+    uint8_t rxBuf[MAX_STREAM_BUF_SIZE] = {0};
     size_t rxPtr = 0;
+
+    /// time of last rx, used, to slow down our polling if we haven't heard from anyone
+    uint32_t lastRxMsec = 0;
 
   public:
     StreamAPI(Stream *_stream) : stream(_stream) {}
@@ -43,15 +48,14 @@ class StreamAPI : public PhoneAPI
     /**
      * Currently we require frequent invocation from loop() to check for arrived serial packets and to send new packets to the
      * phone.
-     * FIXME, to support better power behavior instead move to a thread and block on serial reads.
      */
-    void loop();
+    virtual int32_t runOncePart();
 
   private:
     /**
      * Read any rx chars from the link and call handleToRadio
      */
-    void readStream();
+    int32_t readStream();
 
     /**
      * call getFromRadio() and deliver encapsulated packets to the Stream
@@ -63,7 +67,12 @@ class StreamAPI : public PhoneAPI
      * Send a FromRadio.rebooted = true packet to the phone
      */
     void emitRebooted();
-    
+
+    virtual void onConnectionChanged(bool connected) override;
+
+    /// Check the current underlying physical link to see if the client is currently connected
+    virtual bool checkIsConnected() override = 0;
+
     /**
      * Send the current txBuffer over our stream
      */
@@ -73,5 +82,8 @@ class StreamAPI : public PhoneAPI
     bool canWrite = true;
 
     /// Subclasses can use this scratch buffer if they wish
-    uint8_t txBuf[MAX_STREAM_BUF_SIZE];
+    uint8_t txBuf[MAX_STREAM_BUF_SIZE] = {0};
+
+    /// Low level function to emit a protobuf encapsulated log record
+    void emitLogRecord(meshtastic_LogRecord_Level level, const char *src, const char *format, va_list arg);
 };

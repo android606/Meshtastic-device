@@ -1,14 +1,15 @@
 #include "concurrency/BinarySemaphoreFreeRTOS.h"
 #include "configuration.h"
+#include <assert.h>
 
 #ifdef HAS_FREE_RTOS
 
 namespace concurrency
 {
 
-BinarySemaphoreFreeRTOS::BinarySemaphoreFreeRTOS()
+BinarySemaphoreFreeRTOS::BinarySemaphoreFreeRTOS() : semaphore(xSemaphoreCreateBinary())
 {
-    semaphore = xSemaphoreCreateBinary();
+    assert(semaphore);
 }
 
 BinarySemaphoreFreeRTOS::~BinarySemaphoreFreeRTOS()

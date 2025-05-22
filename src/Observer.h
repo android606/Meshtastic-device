@@ -1,7 +1,6 @@
 #pragma once
 
 #include <Arduino.h>
-#include <assert.h>
 #include <list>
 
 template <class T> class Observable;
@@ -11,13 +10,13 @@ template <class T> class Observable;
  */
 template <class T> class Observer
 {
-    Observable<T> *observed = NULL;
+    std::list<Observable<T> *> observables;
 
   public:
     virtual ~Observer();
 
-    /// Stop watching our current obserable
-    void unobserve();
+    /// Stop watching the observable
+    void unobserve(Observable<T> *o);
 
     /// Start watching a specified observable
     void observe(Observable<T> *o);
@@ -47,7 +46,7 @@ template <class Callback, class T> class CallbackObserver : public Observer<T>
     CallbackObserver(Callback *_objPtr, ObserverCallback _method) : objPtr(_objPtr), method(_method) {}
 
   protected:
-    virtual int onNotify(T arg) { return (objPtr->*method)(arg); }
+    virtual int onNotify(T arg) override { return (objPtr->*method)(arg); }
 };
 
 /**
@@ -87,21 +86,21 @@ template <class T> class Observable
 
 template <class T> Observer<T>::~Observer()
 {
-    unobserve();
+    for (typename std::list<Observable<T> *>::const_iterator iterator = observables.begin(); iterator != observables.end();
+         ++iterator) {
+        (*iterator)->removeObserver(this);
+    }
+    observables.clear();
 }
 
-template <class T> void Observer<T>::unobserve()
+template <class T> void Observer<T>::unobserve(Observable<T> *o)
 {
-    if (observed)
-        observed->removeObserver(this);
-    observed = NULL;
+    o->removeObserver(this);
+    observables.remove(o);
 }
 
 template <class T> void Observer<T>::observe(Observable<T> *o)
 {
-    // We can only watch one thing at a time
-    assert(!observed);
-
-    observed = o;
+    observables.push_back(o);
     o->addObserver(this);
 }

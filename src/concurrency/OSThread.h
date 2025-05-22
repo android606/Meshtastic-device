@@ -53,6 +53,8 @@ class OSThread : public Thread
 
     static void setup();
 
+    virtual int32_t disable();
+
     /**
      * Wait a specified number msecs starting from the current time (rather than the last time we were run)
      */
@@ -65,6 +67,7 @@ class OSThread : public Thread
      * Returns desired period for next invocation (or RUN_SAME for no change)
      */
     virtual int32_t runOnce() = 0;
+    bool sleepOnNextExecution = false;
 
     // Do not override this
     virtual void run();

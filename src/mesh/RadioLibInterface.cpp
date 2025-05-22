@@ -1,31 +1,52 @@
 #include "RadioLibInterface.h"
 #include "MeshTypes.h"
 #include "NodeDB.h"
+#include "PowerMon.h"
 #include "SPILock.h"
-#include "mesh-pb-constants.h"
+#include "Throttle.h"
+#include "configuration.h"
 #include "error.h"
-#include <configuration.h>
+#include "main.h"
+#include "mesh-pb-constants.h"
 #include <pb_decode.h>
 #include <pb_encode.h>
 
-// FIXME, we default to 4MHz SPI, SPI mode 0, check if the datasheet says it can really do that
-static SPISettings spiSettings(4000000, MSBFIRST, SPI_MODE0);
-
-void LockingModule::SPItransfer(uint8_t cmd, uint8_t reg, uint8_t *dataOut, uint8_t *dataIn, uint8_t numBytes)
+#if ARCH_PORTDUINO
+#include "PortduinoGlue.h"
+#include "meshUtils.h"
+#endif
+void LockingArduinoHal::spiBeginTransaction()
 {
-    concurrency::LockGuard g(spiLock);
+    spiLock->lock();
 
-    Module::SPItransfer(cmd, reg, dataOut, dataIn, numBytes);
+    ArduinoHal::spiBeginTransaction();
 }
 
-RadioLibInterface::RadioLibInterface(RADIOLIB_PIN_TYPE cs, RADIOLIB_PIN_TYPE irq, RADIOLIB_PIN_TYPE rst, RADIOLIB_PIN_TYPE busy,
-                                     SPIClass &spi, PhysicalLayer *_iface)
-    : NotifiedWorkerThread("RadioIf"), module(cs, irq, rst, busy, spi, spiSettings), iface(_iface)
+void LockingArduinoHal::spiEndTransaction()
+{
+    ArduinoHal::spiEndTransaction();
+
+    spiLock->unlock();
+}
+#if ARCH_PORTDUINO
+void LockingArduinoHal::spiTransfer(uint8_t *out, size_t len, uint8_t *in)
+{
+    spi->transfer(out, in, len);
+}
+#endif
+
+RadioLibInterface::RadioLibInterface(LockingArduinoHal *hal, RADIOLIB_PIN_TYPE cs, RADIOLIB_PIN_TYPE irq, RADIOLIB_PIN_TYPE rst,
+                                     RADIOLIB_PIN_TYPE busy, PhysicalLayer *_iface)
+    : NotifiedWorkerThread("RadioIf"), module(hal, cs, irq, rst, busy), iface(_iface)
 {
     instance = this;
+#if defined(ARCH_STM32WL) && defined(USE_SX1262)
+    module.setCb_digitalWrite(stm32wl_emulate_digitalWrite);
+    module.setCb_digitalRead(stm32wl_emulate_digitalRead);
+#endif
 }
 
-#ifndef NO_ESP32
+#ifdef ARCH_ESP32
 // ESP32 doesn't use that flag
 #define YIELD_FROM_ISR(x) portYIELD_FROM_ISR()
 #else
@@ -59,7 +80,7 @@ void INTERRUPT_ATTR RadioLibInterface::isrTxLevel0()
  */
 RadioLibInterface *RadioLibInterface::instance;
 
-/** Could we send right now (i.e. either not actively receving or transmitting)? */
+/** Could we send right now (i.e. either not actively receiving or transmitting)? */
 bool RadioLibInterface::canSendImmediately()
 {
     // We wait _if_ we are partially though receiving a packet (rather than just merely waiting for one).
@@ -68,82 +89,159 @@ bool RadioLibInterface::canSendImmediately()
     bool busyTx = sendingPacket != NULL;
     bool busyRx = isReceiving && isActivelyReceiving();
 
-
     if (busyTx || busyRx) {
-        if (busyTx)
-            DEBUG_MSG("Can not send yet, busyTx\n");
+        if (busyTx) {
+            LOG_WARN("Can not send yet, busyTx");
+        }
         // If we've been trying to send the same packet more than one minute and we haven't gotten a
         // TX IRQ from the radio, the radio is probably broken.
-        if (busyTx && (millis() - lastTxStart > 60000)){
-            DEBUG_MSG("Hardware Failure! busyTx for more than 60s\n");
-            recordCriticalError(CriticalErrorCode_TransmitFailed);
-#ifndef NO_ESP32
-            if (busyTx && (millis() - lastTxStart > 65000)) // After 5s more, reboot
-                ESP.restart();
-#endif
+        if (busyTx && !Throttle::isWithinTimespanMs(lastTxStart, 60000)) {
+            LOG_ERROR("Hardware Failure! busyTx for more than 60s");
+            RECORD_CRITICALERROR(meshtastic_CriticalErrorCode_TRANSMIT_FAILED);
+            // reboot in 5 seconds when this condition occurs.
+            rebootAtMsec = lastTxStart + 65000;
         }
-        if (busyRx)
-            DEBUG_MSG("Can not send yet, busyRx\n");
+        if (busyRx) {
+            LOG_WARN("Can not send yet, busyRx");
+        }
         return false;
     } else
         return true;
 }
 
+bool RadioLibInterface::receiveDetected(uint16_t irq, ulong syncWordHeaderValidFlag, ulong preambleDetectedFlag)
+{
+    bool detected = (irq & (syncWordHeaderValidFlag | preambleDetectedFlag));
+    // Handle false detections
+    if (detected) {
+        if (!activeReceiveStart) {
+            activeReceiveStart = millis();
+        } else if (!Throttle::isWithinTimespanMs(activeReceiveStart, 2 * preambleTimeMsec) && !(irq & syncWordHeaderValidFlag)) {
+            // The HEADER_VALID flag should be set by now if it was really a packet, so ignore PREAMBLE_DETECTED flag
+            activeReceiveStart = 0;
+            LOG_DEBUG("Ignore false preamble detection");
+            return false;
+        } else if (!Throttle::isWithinTimespanMs(activeReceiveStart, maxPacketTimeMsec)) {
+            // We should have gotten an RX_DONE IRQ by now if it was really a packet, so ignore HEADER_VALID flag
+            activeReceiveStart = 0;
+            LOG_DEBUG("Ignore false header detection");
+            return false;
+        }
+    }
+    return detected;
+}
+
 /// Send a packet (possibly by enquing in a private fifo).  This routine will
 /// later free() the packet to pool.  This routine is not allowed to stall because it is called from
 /// bluetooth comms code.  If the txmit queue is empty it might return an error
-ErrorCode RadioLibInterface::send(MeshPacket *p)
+ErrorCode RadioLibInterface::send(meshtastic_MeshPacket *p)
 {
+
+#ifndef DISABLE_WELCOME_UNSET
+
+    if (config.lora.region != meshtastic_Config_LoRaConfig_RegionCode_UNSET) {
+        if (disabled || !config.lora.tx_enabled) {
+            LOG_WARN("send - !config.lora.tx_enabled");
+            packetPool.release(p);
+            return ERRNO_DISABLED;
+        }
+
+    } else {
+        LOG_WARN("send - lora tx disabled: Region unset");
+        packetPool.release(p);
+        return ERRNO_DISABLED;
+    }
+
+#else
+
+    if (disabled || !config.lora.tx_enabled) {
+        LOG_WARN("send - !config.lora.tx_enabled");
+        packetPool.release(p);
+        return ERRNO_DISABLED;
+    }
+
+#endif
+
+    if (p->to == NODENUM_BROADCAST_NO_LORA) {
+        LOG_DEBUG("Drop no-LoRa pkt");
+        return ERRNO_SHOULD_RELEASE;
+    }
+
     // Sometimes when testing it is useful to be able to never turn on the xmitter
 #ifndef LORA_DISABLE_SENDING
-    printPacket("enqueuing for send", p);
-    uint32_t xmitMsec = getPacketTime(p);
+    printPacket("enqueue for send", p);
 
-    DEBUG_MSG("txGood=%d,rxGood=%d,rxBad=%d\n", txGood, rxGood, rxBad);
-    ErrorCode res = txQueue.enqueue(p, 0) ? ERRNO_OK : ERRNO_UNKNOWN;
+    LOG_DEBUG("txGood=%d,txRelay=%d,rxGood=%d,rxBad=%d", txGood, txRelay, rxGood, rxBad);
+    ErrorCode res = txQueue.enqueue(p) ? ERRNO_OK : ERRNO_UNKNOWN;
 
     if (res != ERRNO_OK) { // we weren't able to queue it, so we must drop it to prevent leaks
         packetPool.release(p);
         return res;
     }
 
-    // Count the packet toward our TX airtime utilization.
-    //   We only count it if it can be added to the TX queue.
-    airTime->logAirtime(TX_LOG, xmitMsec);
-    //airTime.logAirtime(TX_LOG, xmitMsec);
-
-    // We want all sending/receiving to be done by our daemon thread, We use a delay here because this packet might have been sent
-    // in response to a packet we just received.  So we want to make sure the other side has had a chance to reconfigure its radio
-    startTransmitTimer(true);
+    // set (random) transmit delay to let others reconfigure their radio,
+    // to avoid collisions and implement timing-based flooding
+    setTransmitDelay();
 
     return res;
 #else
     packetPool.release(p);
-    return ERRNO_UNKNOWN;
+    return ERRNO_DISABLED;
 #endif
+}
+
+meshtastic_QueueStatus RadioLibInterface::getQueueStatus()
+{
+    meshtastic_QueueStatus qs;
+
+    qs.res = qs.mesh_packet_id = 0;
+    qs.free = txQueue.getFree();
+    qs.maxlen = txQueue.getMaxLen();
+
+    return qs;
 }
 
 bool RadioLibInterface::canSleep()
 {
-    bool res = txQueue.isEmpty();
-    if (!res) // only print debug messages if we are vetoing sleep
-        DEBUG_MSG("radio wait to sleep, txEmpty=%d\n", res);
-
+    bool res = txQueue.empty();
+    if (!res) { // only print debug messages if we are vetoing sleep
+        LOG_DEBUG("Radio wait to sleep, txEmpty=%d", res);
+    }
     return res;
 }
 
+/** Allow other firmware components to ask whether we are currently sending a packet
+Initially implemented to protect T-Echo's capacitive touch button from spurious presses during tx
+*/
+bool RadioLibInterface::isSending()
+{
+    return sendingPacket != NULL;
+}
+
+/** Attempt to cancel a previously sent packet.  Returns true if a packet was found we could cancel */
+bool RadioLibInterface::cancelSending(NodeNum from, PacketId id)
+{
+    auto p = txQueue.remove(from, id);
+    if (p)
+        packetPool.release(p); // free the packet we just removed
+
+    bool result = (p != NULL);
+    LOG_DEBUG("cancelSending id=0x%x, removed=%d", id, result);
+    return result;
+}
+
+/** Attempt to find a packet in the TxQueue. Returns true if the packet was found. */
+bool RadioLibInterface::findInTxQueue(NodeNum from, PacketId id)
+{
+    return txQueue.find(from, id);
+}
+
 /** radio helper thread callback.
-
-We never immediately transmit after any operation (either rx or tx).  Instead we should start receiving and
-wait a random delay of 50 to 200 ms to make sure we are not stomping on someone else.  The 50ms delay at the beginning ensures all
-possible listeners have had time to finish processing the previous packet and now have their radio in RX state.  The up to 200ms
-random delay gives a chance for all possible senders to have high odds of detecting that someone else started transmitting first
-and then they will wait until that packet finishes.
-
-NOTE: the large flood rebroadcast delay might still be needed even with this approach.  Because we might not be able to hear other
-transmitters that we are potentially stomping on.  Requires further thought.
-
-FIXME, the MIN_TX_WAIT_MSEC and MAX_TX_WAIT_MSEC values should be tuned via logic analyzer later.
+We never immediately transmit after any operation (either Rx or Tx). Instead we should wait a random multiple of
+'slotTimes' (see definition in RadioInterface.h) taken from a contention window (CW) to lower the chance of collision.
+The CW size is determined by setTransmitDelay() and depends either on the current channel utilization or SNR in case
+of a flooding message. After this, we perform channel activity detection (CAD) and reset the transmit delay if it is
+currently active.
 */
 void RadioLibInterface::onNotify(uint32_t notification)
 {
@@ -151,31 +249,48 @@ void RadioLibInterface::onNotify(uint32_t notification)
     case ISR_TX:
         handleTransmitInterrupt();
         startReceive();
-        // DEBUG_MSG("tx complete - starting timer\n");
-        startTransmitTimer();
+        setTransmitDelay();
         break;
     case ISR_RX:
         handleReceiveInterrupt();
         startReceive();
-        // DEBUG_MSG("rx complete - starting timer\n");
-        startTransmitTimer();
+        setTransmitDelay();
         break;
     case TRANSMIT_DELAY_COMPLETED:
-        // DEBUG_MSG("delay done\n");
 
-        // If we are not currently in receive mode, then restart the timer and try again later (this can happen if the main thread
+        // If we are not currently in receive mode, then restart the random delay (this can happen if the main thread
         // has placed the unit into standby)  FIXME, how will this work if the chipset is in sleep mode?
-        if (!txQueue.isEmpty()) {
+        if (!txQueue.empty()) {
             if (!canSendImmediately()) {
-                startTransmitTimer(); // try again in a little while
+                setTransmitDelay(); // currently Rx/Tx-ing: reset random delay
             } else {
-                // Send any outgoing packets we have ready
-                MeshPacket *txp = txQueue.dequeuePtr(0);
+                meshtastic_MeshPacket *txp = txQueue.getFront();
                 assert(txp);
-                startSend(txp);
+                long delay_remaining = txp->tx_after ? txp->tx_after - millis() : 0;
+                if (delay_remaining > 0) {
+                    // There's still some delay pending on this packet, so resume waiting for it to elapse
+                    notifyLater(delay_remaining, TRANSMIT_DELAY_COMPLETED, false);
+                } else {
+                    if (isChannelActive()) { // check if there is currently a LoRa packet on the channel
+                        startReceive();      // try receiving this packet, afterwards we'll be trying to transmit again
+                        setTransmitDelay();
+                    } else {
+                        // Send any outgoing packets we have ready as fast as possible to keep the time between channel scan and
+                        // actual transmission as short as possible
+                        txp = txQueue.dequeue();
+                        assert(txp);
+                        bool sent = startSend(txp);
+                        if (sent) {
+                            // Packet has been sent, count it toward our TX airtime utilization.
+                            uint32_t xmitMsec = getPacketTime(txp);
+                            airTime->logAirtime(TX_LOG, xmitMsec);
+                        }
+                        LOG_DEBUG("%d packets remain in the TX queue", txQueue.getMaxLen() - txQueue.getFree());
+                    }
+                }
             }
         } else {
-            // DEBUG_MSG("done with txqueue\n");
+            // Do nothing, because the queue is empty
         }
         break;
     default:
@@ -183,23 +298,77 @@ void RadioLibInterface::onNotify(uint32_t notification)
     }
 }
 
+void RadioLibInterface::setTransmitDelay()
+{
+    meshtastic_MeshPacket *p = txQueue.getFront();
+    if (!p) {
+        return; // noop if there's nothing in the queue
+    }
+
+    // We want all sending/receiving to be done by our daemon thread.
+    // We use a delay here because this packet might have been sent in response to a packet we just received.
+    // So we want to make sure the other side has had a chance to reconfigure its radio.
+
+    if (p->tx_after) {
+        unsigned long add_delay = p->rx_rssi ? getTxDelayMsecWeighted(p->rx_snr) : getTxDelayMsec();
+        unsigned long now = millis();
+        p->tx_after = min(max(p->tx_after + add_delay, now + add_delay), now + 2 * getTxDelayMsecWeightedWorst(p->rx_snr));
+        notifyLater(p->tx_after - now, TRANSMIT_DELAY_COMPLETED, false);
+    } else if (p->rx_snr == 0 && p->rx_rssi == 0) {
+        /* We assume if rx_snr = 0 and rx_rssi = 0, the packet was generated locally.
+         *   This assumption is valid because of the offset generated by the radio to account for the noise
+         *   floor.
+         */
+        startTransmitTimer(true);
+    } else {
+        // If there is a SNR, start a timer scaled based on that SNR.
+        LOG_DEBUG("rx_snr found. hop_limit:%d rx_snr:%f", p->hop_limit, p->rx_snr);
+        startTransmitTimerSNR(p->rx_snr);
+    }
+}
+
 void RadioLibInterface::startTransmitTimer(bool withDelay)
 {
     // If we have work to do and the timer wasn't already scheduled, schedule it now
-    if (!txQueue.isEmpty()) {
+    if (!txQueue.empty()) {
         uint32_t delay = !withDelay ? 1 : getTxDelayMsec();
-        // DEBUG_MSG("xmit timer %d\n", delay);
         notifyLater(delay, TRANSMIT_DELAY_COMPLETED, false); // This will implicitly enable
+    }
+}
+
+void RadioLibInterface::startTransmitTimerSNR(float snr)
+{
+    // If we have work to do and the timer wasn't already scheduled, schedule it now
+    if (!txQueue.empty()) {
+        uint32_t delay = getTxDelayMsecWeighted(snr);
+        notifyLater(delay, TRANSMIT_DELAY_COMPLETED, false); // This will implicitly enable
+    }
+}
+
+/**
+ * If the packet is not already in the late rebroadcast window, move it there
+ */
+void RadioLibInterface::clampToLateRebroadcastWindow(NodeNum from, PacketId id)
+{
+    // Look for non-late packets only, so we don't do this twice!
+    meshtastic_MeshPacket *p = txQueue.remove(from, id, true, false);
+    if (p) {
+        p->tx_after = millis() + getTxDelayMsecWeightedWorst(p->rx_snr);
+        if (txQueue.enqueue(p)) {
+            LOG_DEBUG("Move existing queued packet to the late rebroadcast window %dms from now", p->tx_after - millis());
+        } else {
+            packetPool.release(p);
+        }
     }
 }
 
 void RadioLibInterface::handleTransmitInterrupt()
 {
-    // DEBUG_MSG("handling lora TX interrupt\n");
     // This can be null if we forced the device to enter standby mode.  In that case
     // ignore the transmit interrupt
     if (sendingPacket)
         completeSending();
+    powerMon->clearState(meshtastic_PowerMon_State_Lora_TXOn); // But our transmitter is definitely off now
 }
 
 void RadioLibInterface::completeSending()
@@ -211,88 +380,155 @@ void RadioLibInterface::completeSending()
 
     if (p) {
         txGood++;
+        if (!isFromUs(p))
+            txRelay++;
         printPacket("Completed sending", p);
 
         // We are done sending that packet, release it
         packetPool.release(p);
-        // DEBUG_MSG("Done with send\n");
     }
 }
 
 void RadioLibInterface::handleReceiveInterrupt()
 {
     uint32_t xmitMsec;
-    assert(isReceiving);
+
+    // when this is called, we should be in receive mode - if we are not, just jump out instead of bombing. Possible Race
+    // Condition?
+    if (!isReceiving) {
+        LOG_ERROR("handleReceiveInterrupt called when not in rx mode, which shouldn't happen");
+        return;
+    }
+
     isReceiving = false;
 
     // read the number of actually received bytes
     size_t length = iface->getPacketLength();
 
     xmitMsec = getPacketTime(length);
-    airTime->logAirtime(RX_ALL_LOG, xmitMsec);
-    //airTime.logAirtime(RX_ALL_LOG, xmitMsec);
 
-    int state = iface->readData(radiobuf, length);
-    if (state != ERR_NONE) {
-        DEBUG_MSG("ignoring received packet due to error=%d\n", state);
+#ifndef DISABLE_WELCOME_UNSET
+    if (config.lora.region == meshtastic_Config_LoRaConfig_RegionCode_UNSET) {
+        LOG_WARN("lora rx disabled: Region unset");
+        airTime->logAirtime(RX_ALL_LOG, xmitMsec);
+        return;
+    }
+#endif
+
+    int state = iface->readData((uint8_t *)&radioBuffer, length);
+#if ARCH_PORTDUINO
+    if (settingsMap[logoutputlevel] == level_trace) {
+        printBytes("Raw incoming packet: ", (uint8_t *)&radioBuffer, length);
+    }
+#endif
+    if (state != RADIOLIB_ERR_NONE) {
+        LOG_ERROR("Ignore received packet due to error=%d", state);
         rxBad++;
+
+        airTime->logAirtime(RX_ALL_LOG, xmitMsec);
+
     } else {
         // Skip the 4 headers that are at the beginning of the rxBuf
         int32_t payloadLen = length - sizeof(PacketHeader);
-        const uint8_t *payload = radiobuf + sizeof(PacketHeader);
 
         // check for short packets
         if (payloadLen < 0) {
-            DEBUG_MSG("ignoring received packet too short\n");
+            LOG_WARN("Ignore received packet too short");
             rxBad++;
+            airTime->logAirtime(RX_ALL_LOG, xmitMsec);
         } else {
-            const PacketHeader *h = (PacketHeader *)radiobuf;
-
             rxGood++;
+            // altered packet with "from == 0" can do Remote Node Administration without permission
+            if (radioBuffer.header.from == 0) {
+                LOG_WARN("Ignore received packet without sender");
+                return;
+            }
 
             // Note: we deliver _all_ packets to our router (i.e. our interface is intentionally promiscuous).
             // This allows the router and other apps on our node to sniff packets (usually routing) between other
             // nodes.
-            MeshPacket *mp = packetPool.allocZeroed();
+            meshtastic_MeshPacket *mp = packetPool.allocZeroed();
 
-            mp->from = h->from;
-            mp->to = h->to;
-            mp->id = h->id;
-            assert(HOP_MAX <= PACKET_FLAGS_HOP_MASK); // If hopmax changes, carefully check this code
-            mp->hop_limit = h->flags & PACKET_FLAGS_HOP_MASK;
-            mp->want_ack = !!(h->flags & PACKET_FLAGS_WANT_ACK_MASK);
+            // Keep the assigned fields in sync with src/mqtt/MQTT.cpp:onReceiveProto
+            mp->from = radioBuffer.header.from;
+            mp->to = radioBuffer.header.to;
+            mp->id = radioBuffer.header.id;
+            mp->channel = radioBuffer.header.channel;
+            assert(HOP_MAX <= PACKET_FLAGS_HOP_LIMIT_MASK); // If hopmax changes, carefully check this code
+            mp->hop_limit = radioBuffer.header.flags & PACKET_FLAGS_HOP_LIMIT_MASK;
+            mp->hop_start = (radioBuffer.header.flags & PACKET_FLAGS_HOP_START_MASK) >> PACKET_FLAGS_HOP_START_SHIFT;
+            mp->want_ack = !!(radioBuffer.header.flags & PACKET_FLAGS_WANT_ACK_MASK);
+            mp->via_mqtt = !!(radioBuffer.header.flags & PACKET_FLAGS_VIA_MQTT_MASK);
+            // If hop_start is not set, next_hop and relay_node are invalid (firmware <2.3)
+            mp->next_hop = mp->hop_start == 0 ? NO_NEXT_HOP_PREFERENCE : radioBuffer.header.next_hop;
+            mp->relay_node = mp->hop_start == 0 ? NO_RELAY_NODE : radioBuffer.header.relay_node;
 
             addReceiveMetadata(mp);
 
-            mp->which_payload = MeshPacket_encrypted_tag; // Mark that the payload is still encrypted at this point
-            assert(((uint32_t) payloadLen) <= sizeof(mp->encrypted.bytes));
-            memcpy(mp->encrypted.bytes, payload, payloadLen);
+            mp->which_payload_variant =
+                meshtastic_MeshPacket_encrypted_tag; // Mark that the payload is still encrypted at this point
+            assert(((uint32_t)payloadLen) <= sizeof(mp->encrypted.bytes));
+            memcpy(mp->encrypted.bytes, radioBuffer.payload, payloadLen);
             mp->encrypted.size = payloadLen;
 
             printPacket("Lora RX", mp);
 
-            xmitMsec = getPacketTime(mp);
             airTime->logAirtime(RX_LOG, xmitMsec);
-            //airTime.logAirtime(RX_LOG, xmitMsec);
 
             deliverToReceiver(mp);
         }
     }
 }
 
-/** start an immediate transmit */
-void RadioLibInterface::startSend(MeshPacket *txp)
+void RadioLibInterface::startReceive()
 {
-    printPacket("Starting low level send", txp);
-    setStandby(); // Cancel any already in process receives
+    isReceiving = true;
+    powerMon->setState(meshtastic_PowerMon_State_Lora_RXOn);
+}
 
-    configHardwareForSend(); // must be after setStandby
+void RadioLibInterface::configHardwareForSend()
+{
+    powerMon->setState(meshtastic_PowerMon_State_Lora_TXOn);
+}
 
-    size_t numbytes = beginSending(txp);
+void RadioLibInterface::setStandby()
+{
+    // neither sending nor receiving
+    powerMon->clearState(meshtastic_PowerMon_State_Lora_RXOn);
+    powerMon->clearState(meshtastic_PowerMon_State_Lora_TXOn);
+}
 
-    int res = iface->startTransmit(radiobuf, numbytes);
-    assert(res == ERR_NONE);
+/** start an immediate transmit */
+bool RadioLibInterface::startSend(meshtastic_MeshPacket *txp)
+{
+    /* NOTE: Minimize the actions before startTransmit() to keep the time between
+             channel scan and actual transmit as low as possible to avoid collisions. */
+    if (disabled || !config.lora.tx_enabled) {
+        LOG_WARN("Drop Tx packet because LoRa Tx disabled");
+        packetPool.release(txp);
+        return false;
+    } else {
+        configHardwareForSend(); // must be after setStandby
 
-    // Must be done AFTER, starting transmit, because startTransmit clears (possibly stale) interrupt pending register bits
-    enableInterrupt(isrTxLevel0);
+        size_t numbytes = beginSending(txp);
+
+        int res = iface->startTransmit((uint8_t *)&radioBuffer, numbytes);
+        if (res != RADIOLIB_ERR_NONE) {
+            LOG_ERROR("startTransmit failed, error=%d", res);
+            RECORD_CRITICALERROR(meshtastic_CriticalErrorCode_RADIO_SPI_BUG);
+
+            // This send failed, but make sure to 'complete' it properly
+            completeSending();
+            powerMon->clearState(meshtastic_PowerMon_State_Lora_TXOn); // Transmitter off now
+            startReceive(); // Restart receive mode (because startTransmit failed to put us in xmit mode)
+        } else {
+            // Must be done AFTER, starting transmit, because startTransmit clears (possibly stale) interrupt pending register
+            // bits
+            enableInterrupt(isrTxLevel0);
+            lastTxStart = millis();
+            printPacket("Started Tx", txp);
+        }
+
+        return res == RADIOLIB_ERR_NONE;
+    }
 }

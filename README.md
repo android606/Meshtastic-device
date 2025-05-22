@@ -1,213 +1,39 @@
-# Meshtastic-device
+<div align="center" markdown="1">
 
-This is the device side code for the [meshtastic.org](https://www.meshtastic.org) project.
+<img src=".github/meshtastic_logo.png" alt="Meshtastic Logo" width="80"/>
+<h1>Meshtastic Firmware</h1>
 
-![Continuous Integration](https://github.com/meshtastic/Meshtastic-esp32/workflows/Continuous%20Integration/badge.svg)
+![GitHub release downloads](https://img.shields.io/github/downloads/meshtastic/firmware/total)
+[![CI](https://img.shields.io/github/actions/workflow/status/meshtastic/firmware/main_matrix.yml?branch=master&label=actions&logo=github&color=yellow)](https://github.com/meshtastic/firmware/actions/workflows/ci.yml)
+[![CLA assistant](https://cla-assistant.io/readme/badge/meshtastic/firmware)](https://cla-assistant.io/meshtastic/firmware)
+[![Fiscal Contributors](https://opencollective.com/meshtastic/tiers/badge.svg?label=Fiscal%20Contributors&color=deeppink)](https://opencollective.com/meshtastic/)
+[![Vercel](https://img.shields.io/static/v1?label=Powered%20by&message=Vercel&style=flat&logo=vercel&color=000000)](https://vercel.com?utm_source=meshtastic&utm_campaign=oss)
 
-Meshtastic™ is a project that lets you use
-inexpensive GPS mesh radios as an extensible, super long battery life mesh GPS communicator. These radios are great for hiking, skiing, paragliding -
-essentially any hobby where you don't have reliable internet access. Each member of your private mesh can always see the location and distance of all other
-members and any text messages sent to your group chat.
+<a href="https://trendshift.io/repositories/5524" target="_blank"><img src="https://trendshift.io/api/badge/repositories/5524" alt="meshtastic%2Ffirmware | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
 
-The radios automatically create a mesh to forward packets as needed, so everyone in the group can receive messages from even the furthest member. The radios
-will optionally work with your phone, but no phone is required.
+</div>
 
-Typical time between recharging the radios should be about eight days.
+</div>
 
-This project is is currently in beta-testing - if you have questions please [join our discussion forum](https://meshtastic.discourse.group/).
+<div align="center">
+	<a href="https://meshtastic.org">Website</a>
+	-
+	<a href="https://meshtastic.org/docs/">Documentation</a>
+</div>
 
-This software is 100% open source and developed by a group of hobbyist experimenters. No warranty is provided, if you'd like to improve it - we'd love your help. Please post in the chat.
+## Overview
 
-## Supported hardware
+This repository contains the official device firmware for Meshtastic, an open-source LoRa mesh networking project designed for long-range, low-power communication without relying on internet or cellular infrastructure. The firmware supports various hardware platforms, including ESP32, nRF52, RP2040/RP2350, and Linux-based devices.
 
-We currently support three models of radios.
+Meshtastic enables text messaging, location sharing, and telemetry over a decentralized mesh network, making it ideal for outdoor adventures, emergency preparedness, and remote operations.
 
-- TTGO T-Beam (usually the recommended choice)
-  - [T-Beam V1.1 w/ NEO-6M - special Meshtastic version](https://www.aliexpress.com/item/4001178678568.html) (Includes built-in OLED display and they have **preinstalled** the meshtastic software)
-  - [T-Beam V1.1 w/ NEO-M8N](https://www.aliexpress.com/item/33047631119.html) (slightly better GPS)
-  - [T-Beam V1.1 w/ NEO-M8N /w SX1262](https://www.aliexpress.com/item/4001287221970.html) (slightly better GPS + LoRa)
-    - board labels "TTGO T22_V1.1 20191212"
-  - [T-Beam V0.7 w/ NEO-6M](https://www.aliexpress.com/item/4000574335430.html) (will work but **you must use the tbeam0.7 firmware ** - but the T-Beam V1.0 or later are better!)
-     - board labels "TTGO T22_V07 20180711"
-  - 3D printable cases
-    - [T-Beam V0](https://www.thingiverse.com/thing:3773717) (GPS and LoRa antenna misaligned if GPS placed as pictured)
-    - [T-Beam V1 (SMA-antenna)](https://www.thingiverse.com/thing:3830711)
-    - [T-Beam V1 (SMA-antenna)](https://www.thingiverse.com/thing:4677388) (Mounting option for larger GPS antenna but LoRa antenna enclosed)
-    - [T-Beam V1 (IPEX-antenna)](https://www.thingiverse.com/thing:4587297) (GPS and LoRa antenna misaligned if GPS placed as pictured)
-    - [T-Beam V1 (IPEX-antenna)](https://www.thingiverse.com/thing:4589651)
-    - [T-Beam V1 (IPEX-antenna)](https://www.thingiverse.com/thing:4619981) (GPS and LoRa antenna misaligned if GPS placed as pictured)
-  - Laser-cut cases
-    - [T-Beam V1 (SMA-antenna)](https://www.thingiverse.com/thing:4552771)
+### Get Started
 
-- [TTGO LORA32](https://www.aliexpress.com/item/4000211331316.html) - No GPS
-  - version 2.1
-    - board labels "TTGO T3_V1.6 20180606"
-  - 3D printable case
-    - [TTGO LORA32 v1](https://www.thingiverse.com/thing:3385109)
+- 🔧 **[Building Instructions](https://meshtastic.org/docs/development/firmware/build)** – Learn how to compile the firmware from source.
+- ⚡ **[Flashing Instructions](https://meshtastic.org/docs/getting-started/flashing-firmware/)** – Install or update the firmware on your device.
 
-- [Heltec LoRa 32](https://heltec.org/project/wifi-lora-32/) - No GPS
-  - [Official Heltec case](https://www.aliexpress.com/item/4001050707951.html)
-  - [3D Printable case](https://www.thingiverse.com/thing:3125854)
-  
-Note: The GPS and LoRa stock antennas should be placed in a way, that the GPS antenna faces the sky and the LoRa antenna radiates 360 degrees horizontally. For better GPS reception you might want to [upgrade the GPS antenna](https://meshtastic.discourse.group/t/the-importance-of-gps-antennas-and-request-to-3d-case-documentation-people/1505) and to properly align the antennas you might want to upgrade to a LoRa antenna that can be adjusted to radiate into the right directions.
+Join our community and help improve Meshtastic! 🚀
 
-**Make sure to get the frequency for your country**
+## Stats
 
-- US/JP/AU/NZ/CA - 915MHz
-- CN - 470MHz
-- EU - 868MHz, 433MHz
-- full list of LoRa frequencies per region is available [here](https://www.thethingsnetwork.org/docs/lorawan/frequencies-by-country.html)
-
-Getting a version that includes a screen is optional, but highly recommended.
-
-## Firmware Installation
-
-Prebuilt binaries for the supported radios are available in our [releases](https://github.com/meshtastic/Meshtastic-esp32/releases). Your initial installation has to happen over USB from your Mac, Windows or Linux PC. Once our software is installed, all future software updates happen over bluetooth from your phone.
-
-Be **very careful** to install the correct load for your board. In particular the popular 'T-BEAM' radio from TTGO is not called 'TTGO-Lora' (that is a different board). So don't install the 'TTGO-Lora' build on a TBEAM, it won't work correctly.
-
-Please post comments on our [group chat](https://meshtastic.discourse.group/) if you have problems or successes.
-
-### Installing from a GUI - Windows and Mac
-
-1. Download and unzip the latest Meshtastic firmware [release](https://github.com/meshtastic/Meshtastic-esp32/releases).
-2. Download [ESPHome Flasher](https://github.com/esphome/esphome-flasher/releases) (either x86-32bit Windows or x64-64 bit Windows).
-3. Connect your radio to your USB port and open ESPHome Flasher.
-4. If your board is not showing under Serial Port then you likely need to install the drivers for the CP210X serial chip. In Windows you can check by searching “Device Manager” and ensuring the device is shown under “Ports”.
-5. If there is an error, download the drivers [here](https://www.silabs.com/products/development-tools/software/usb-to-uart-bridge-vcp-drivers), then unzip and run the Installer application.
-6. In ESPHome Flasher, refresh the serial ports and select your board.
-7. Browse to the previously downloaded firmware and select the correct firmware based on the board type, country and frequency.
-8. Select Flash ESP.
-9. Once complete, “Done! Flashing is complete!” will be shown.
-10. Debug messages sent from the Meshtastic device can be viewed with a terminal program such as [PuTTY](https://www.putty.org/) (Windows only). Within PuTTY, click “Serial”, enter the “Serial line” com port (can be found at step 4), enter “Speed” as 921600, then click “Open”.
-
-### Installing from a commandline
-
-These instructions currently require a few commmand lines, but it should be pretty straightforward.
-
-1. Install "pip". Pip is the python package manager we use to get the esptool installer app. Instructions [here](https://www.makeuseof.com/tag/install-pip-for-python/). If you are using OS-X, see these [special instructions](docs/software/install-OSX.md).
-2. Run "pip install --upgrade esptool" to get esptool installed on your machine.
-3. Connect your radio to your USB port.
-4. Confirm that your device is talking to your PC by running "esptool.py chip_id". The Heltec build also works on the TTGO LORA32 radio. You should see something like:
-
-```
-mydir$ esptool.py chip_id
-esptool.py v2.6
-Found 2 serial ports
-Serial port /dev/ttyUSB0
-Connecting....
-Detecting chip type... ESP32
-Chip is ESP32D0WDQ6 (revision 1)
-Features: WiFi, BT, Dual Core, 240MHz, VRef calibration in efuse, Coding Scheme None
-MAC: 24:6f:28:b5:36:71
-Uploading stub...
-Running stub...
-Stub running...
-Warning: ESP32 has no Chip ID. Reading MAC instead.
-MAC: 24:6f:28:b5:36:71
-Hard resetting via RTS pin...
-```
-
-5. cd into the directory where the release zip file was expanded.
-6. Install the correct firmware for your board with `device-install.sh -f firmware-_board_-_country_.bin`.
-   - Example: `./device-install.sh -f firmware-HELTEC-US-0.0.3.bin`.
-7. To update run `device-update.sh -f firmware-_board_-_country_.bin`
-   - Example: `./device-update.sh -f firmware-HELTEC-US-0.0.3.bin`.
-
-Note: If you have previously installed meshtastic, you don't need to run this full script instead just run `esptool.py --baud 921600 write_flash 0x10000 firmware-_board_-_country_-_version_.bin`. This will be faster, also all of your current preferences will be preserved.
-
-You should see something like this:
-
-```
-kevinh@kevin-server:~/development/meshtastic/meshtastic-esp32/release/latest$ ./device-install.sh firmware-TBEAM-US-0.1.8.bin
-Trying to flash firmware-TBEAM-US-0.1.8.bin, but first erasing and writing system information
-esptool.py v2.6
-Found 2 serial ports
-Serial port /dev/ttyUSB0
-Connecting........____
-Detecting chip type... ESP32
-Chip is ESP32D0WDQ6 (revision 1)
-Features: WiFi, BT, Dual Core, 240MHz, VRef calibration in efuse, Coding Scheme None
-MAC: 24:6f:28:b2:01:6c
-Uploading stub...
-Running stub...
-Stub running...
-Changing baud rate to 921600
-Changed.
-Erasing flash (this may take a while)...
-Chip erase completed successfully in 6.1s
-Hard resetting via RTS pin...
-esptool.py v2.6
-Found 2 serial ports
-Serial port /dev/ttyUSB0
-Connecting.......
-Detecting chip type... ESP32
-Chip is ESP32D0WDQ6 (revision 1)
-Features: WiFi, BT, Dual Core, 240MHz, VRef calibration in efuse, Coding Scheme None
-MAC: 24:6f:28:b2:01:6c
-Uploading stub...
-Running stub...
-Stub running...
-Changing baud rate to 921600
-Changed.
-Configuring flash size...
-Auto-detected Flash size: 4MB
-Flash params set to 0x0220
-Compressed 61440 bytes to 11950...
-Wrote 61440 bytes (11950 compressed) at 0x00001000 in 0.2 seconds (effective 3092.4 kbit/s)...
-Hash of data verified.
-
-Leaving...
-Hard resetting via RTS pin...
-esptool.py v2.6
-Found 2 serial ports
-Serial port /dev/ttyUSB0
-Connecting.....
-Detecting chip type... ESP32
-Chip is ESP32D0WDQ6 (revision 1)
-Features: WiFi, BT, Dual Core, 240MHz, VRef calibration in efuse, Coding Scheme None
-MAC: 24:6f:28:b2:01:6c
-Uploading stub...
-Running stub...
-Stub running...
-Changing baud rate to 921600
-Changed.
-Configuring flash size...
-Auto-detected Flash size: 4MB
-Compressed 1223568 bytes to 678412...
-Wrote 1223568 bytes (678412 compressed) at 0x00010000 in 10.7 seconds (effective 912.0 kbit/s)...
-Hash of data verified.
-
-Leaving...
-Hard resetting via RTS pin...
-```
-
-7. The board will boot and show the Meshtastic logo.
-8. Please post a comment on our chat so we know if these instructions worked for you ;-). If you find bugs/have-questions post there also - we will be rapidly iterating over the next few weeks.
-
-# Meshtastic Android app
-
-The companion (optional) Meshtastic Android app is [here](https://play.google.com/store/apps/details?id=com.geeksville.mesh&referrer=utm_source%3Dgithub-dev-readme). You can also download it on Google Play.
-
-# Python API
-
-We offer a [python API](https://github.com/meshtastic/Meshtastic-python) that makes it easy to use these devices to provide mesh networking for your custom projects.
-
-# Development
-
-We'd love to have you join us on this merry little project. Please see our [development documents](./docs/software/sw-design.md) and [join us in our discussion forum](https://meshtastic.discourse.group/).
-
-# Credits
-
-This project is run by volunteers. Past contributors include:
-
-- @astro-arphid: Added support for 433MHz radios in europe.
-- @claesg: Various documentation fixes and 3D print enclosures
-- @girtsf: Lots of improvements
-- @spattinson: Fixed interrupt handling for the AXP192 part
-
-# IMPORTANT DISCLAIMERS AND FAQ
-
-For a listing of currently missing features and a FAQ click [here](docs/faq.md).
-
-Copyright 2019 Geeksville Industries, LLC. GPL V3 Licensed.
+![Alt](https://repobeats.axiom.co/api/embed/8025e56c482ec63541593cc5bd322c19d5c0bdcf.svg "Repobeats analytics image")
